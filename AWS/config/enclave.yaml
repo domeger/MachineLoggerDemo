@@ -1,0 +1,20 @@
+version: 1.8
+
+environment:
+  - APP_HOST=luks_demo
+
+encryptedConfig:
+  type: local
+  allowList:
+    environment:
+      - LUKS_PASSPHRASE
+
+hostname: anjuna-enclave
+
+files:
+  - path: "/mnt/encrypted/luks.conf"
+    mode: 0644
+    owner: root
+    group: root
+    content: |
+      luks_passphrase_file=/mnt/encrypted/luks_passphrase

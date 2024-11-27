@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Status Page</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.4.1/socket.io.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            margin: 20px;
+        }
+        h1 {
+            color: #333;
+        }
+        #stats {
+            font-size: 1.5em;
+            color: #007BFF;
+        }
+    </style>
+</head>
+<body>
+    <h1>Real-Time Metrics</h1>
+    <div id="stats">
+        <p>Write Time: <span id="write_time">Loading...</span></p>
+        <p>Write Avg: <span id="write_avg">Loading...</span></p>
+        <p>Write 95th Perc: <span id="write_95th">Loading...</span></p>
+        <p>Read Time: <span id="read_time">Loading...</span></p>
+        <p>Read Avg: <span id="read_avg">Loading...</span></p>
+        <p>Read 95th Perc: <span id="read_95th">Loading...</span></p>
+    </div>
+
+    <script>
+        const socket = io();
+
+        socket.on('update_stats', (data) => {
+            document.getElementById('write_time').innerText = data.write_time;
+            document.getElementById('write_avg').innerText = data.write_avg;
+            document.getElementById('write_95th').innerText = data.write_95th;
+            document.getElementById('read_time').innerText = data.read_time;
+            document.getElementById('read_avg').innerText = data.read_avg;
+            document.getElementById('read_95th').innerText = data.read_95th;
+        });
+    </script>
+</body>
+</html>
