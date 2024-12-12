@@ -1,0 +1,98 @@
+receivers:
+  hostmetrics:
+    collection_interval: 15s
+    scrapers:
+      disk:
+        enabled: true
+        metrics:
+          system.disk.io:
+            enabled: true
+          system.disk.operations:
+            enabled: true
+          system.disk.time:
+            enabled: true
+          system.disk.merged:
+            enabled: true
+      filesystem:
+        enabled: true
+        metrics:
+          system.filesystem.usage:
+            enabled: true
+          system.filesystem.inodes.usage:
+            enabled: true
+  
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  filelog:
+    include: [/var/log/luks/*.log]
+    operators:
+      - type: regex_parser
+        regex: '^(?P<time>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (?P<level>\w+) (?P<message>.*)$'
+        timestamp:
+          parse_from: time
+          layout: '%Y-%m-%d %H:%M:%S'
+
+processors:
+  batch:
+    send_batch_size: 1000
+    timeout: 10s
+    send_batch_max_size: 2048
+  
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 1500
+    spike_limit_mib: 512
+
+  resource:
+    attributes:
+      - action: insert
+        key: deployment.environment
+        value: production
+
+  filter:
+    metrics:
+      include:
+        match_type: regexp
+        metric_names:
+          - system\.disk\..*
+          - system\.filesystem\..*
+          - luks\..*
+
+exporters:
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    namespace: machine_logger
+    const_labels:
+      service: "disk_monitor"
+  
+  otlp:
+    endpoint: "${OTLP_ENDPOINT}"  # Set via environment variable
+    tls:
+      insecure: true  # For development only
+  
+  logging:
+    loglevel: debug  # For development debugging
+
+service:
+  pipelines:
+    metrics:
+      receivers: [hostmetrics, otlp]
+      processors: [memory_limiter, batch, resource, filter]
+      exporters: [prometheus, otlp, logging]
+    
+    logs:
+      receivers: [filelog]
+      processors: [batch]
+      exporters: [otlp, logging]
+
+  telemetry:
+    logs:
+      level: "info"
+    metrics:
+      level: "detailed"
+      address: "0.0.0.0:8888"
