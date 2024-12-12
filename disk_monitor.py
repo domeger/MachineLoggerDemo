@@ -1,129 +1,71 @@
-from opentelemetry import metrics
-from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
-from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
-from opentelemetry.sdk.resources import Resource
-import psutil
+import socketio
 import time
-import subprocess
-import json
+import numpy as np
+import psutil
+import os
+from prometheus_client import start_http_server, Counter, Gauge, Histogram
 
-# Configure the OpenTelemetry meter
-resource = Resource.create({
-    "service.name": "disk-monitor",
-    "service.version": "1.0",
-    "deployment.environment": "production"
-})
+# Define Prometheus metrics with explicit latency tracking
+write_time = Histogram('disk_write_time_seconds', 'Time spent in disk write operations', buckets=(0.001, 0.01, 0.1, 1, 5, 10))
+read_time = Histogram('disk_read_time_seconds', 'Time spent in disk read operations', buckets=(0.001, 0.01, 0.1, 1, 5, 10))
+write_bytes = Counter('disk_bytes_written_total', 'Number of bytes written to disk')
+read_bytes = Counter('disk_bytes_read_total', 'Number of bytes read from disk')
+write_errors = Counter('disk_write_errors_total', 'Number of disk write errors')
+read_errors = Counter('disk_read_errors_total', 'Number of disk read errors')
 
-reader = PeriodicExportingMetricReader(
-    OTLPMetricExporter(endpoint="http://localhost:4317")
-)
-provider = MeterProvider(resource=resource, metric_readers=[reader])
-metrics.set_meter_provider(provider)
-meter = metrics.get_meter("disk.metrics")
+# IO Latency specific metrics
+write_latency = Histogram('disk_write_latency_seconds', 'Disk write latency', buckets=(0.001, 0.01, 0.1, 1, 5, 10))
+read_latency = Histogram('disk_read_latency_seconds', 'Disk read latency', buckets=(0.001, 0.01, 0.1, 1, 5, 10))
 
-# Create instruments for standard disk metrics
-disk_io_read = meter.create_counter(
-    name="disk.read.bytes",
-    description="Number of bytes read from disk",
-    unit="bytes"
-)
-
-disk_io_write = meter.create_counter(
-    name="disk.write.bytes",
-    description="Number of bytes written to disk",
-    unit="bytes"
-)
-
-disk_usage = meter.create_gauge(
-    name="disk.usage",
-    description="Disk usage percentage",
-    unit="percent"
-)
-
-# Create LUKS-specific metrics
-luks_status = meter.create_gauge(
-    name="luks.device.status",
-    description="LUKS device status (1=active, 0=inactive)",
-    unit="1"
-)
-
-luks_io_operations = meter.create_counter(
-    name="luks.io.operations",
-    description="Number of I/O operations on LUKS device",
-    unit="1"
-)
-
-def get_luks_status():
+def measure_disk_io():
+    test_file = '/tmp/disk_io_test.txt'
+    
     try:
-        result = subprocess.run(['cryptsetup', 'status', 'luks-device'], 
-                              capture_output=True, text=True)
-        return 1 if result.returncode == 0 else 0
-    except Exception:
-        return 0
-
-def get_luks_device_stats():
-    try:
-        with open('/proc/diskstats', 'r') as f:
-            for line in f:
-                if 'dm-' in line and 'luks-device' in line:
-                    fields = line.strip().split()
-                    return {
-                        'reads': int(fields[3]),
-                        'writes': int(fields[7])
-                    }
-    except Exception:
-        return {'reads': 0, 'writes': 0}
-
-def collect_metrics():
-    # Get disk I/O statistics
-    disk_io = psutil.disk_io_counters(perdisk=True)
+        # Write test with precise timing
+        write_start = time.perf_counter()
+        with open(test_file, 'w') as f:
+            f.write('x' * 1024 * 1024)  # Write 1MB of data
+        write_duration = time.perf_counter() - write_start
+        write_size = 1024 * 1024
+        
+        # Update write metrics
+        write_time.observe(write_duration)
+        write_latency.observe(write_duration)
+        write_bytes.inc(write_size)
+        
+        # Read test with precise timing
+        read_start = time.perf_counter()
+        with open(test_file, 'r') as f:
+            f.read()
+        read_duration = time.perf_counter() - read_start
+        read_size = write_size
+        
+        # Update read metrics
+        read_time.observe(read_duration)
+        read_latency.observe(read_duration)
+        read_bytes.inc(read_size)
+        
+        # Prepare metrics for Socket.IO
+        metrics = {
+            'write_time': write_duration * 1000,  # Convert to ms
+            'write_avg': write_duration * 1000,
+            'write_95th': write_duration * 1000,
+            'write_bytes': write_size,
+            'read_time': read_duration * 1000,
+            'read_avg': read_duration * 1000,
+            'read_95th': read_duration * 1000,
+            'read_bytes': read_size
+        }
+        
+        # Emit metrics to Flask app
+        sio.emit('metrics', metrics)
+        print("Metrics generated:", metrics)
     
-    # Get disk usage statistics
-    disk_partitions = psutil.disk_partitions()
-    
-    # Standard disk metrics
-    for disk_name, stats in disk_io.items():
-        disk_io_read.add(
-            stats.read_bytes,
-            {"device": disk_name}
-        )
-        disk_io_write.add(
-            stats.write_bytes,
-            {"device": disk_name}
-        )
-    
-    # Disk usage metrics
-    for partition in disk_partitions:
-        try:
-            usage = psutil.disk_usage(partition.mountpoint)
-            disk_usage.set(
-                usage.percent,
-                {
-                    "device": partition.device,
-                    "mountpoint": partition.mountpoint,
-                    "filesystem": partition.fstype
-                }
-            )
-        except PermissionError:
-            continue
-    
-    # LUKS-specific metrics
-    luks_status.set(get_luks_status())
-    
-    luks_stats = get_luks_device_stats()
-    luks_io_operations.add(
-        luks_stats['reads'] + luks_stats['writes'],
-        {"type": "total"}
-    )
-
-def main():
-    while True:
-        try:
-            collect_metrics()
-        except Exception as e:
-            print(f"Error collecting metrics: {e}")
-        time.sleep(15)  # Collect every 15 seconds
-
-if __name__ == "__main__":
-    main()
+    except Exception as e:
+        write_errors.inc()
+        read_errors.inc()
+        print(f"Error measuring disk I/O: {e}")
+    finally:
+        # Clean up test file
+        if os.path.exists(test_file):
+            os.remove(test_file)
